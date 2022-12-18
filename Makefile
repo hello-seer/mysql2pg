@@ -29,7 +29,7 @@ clean:
 ###
 
 FORMAT_SRC := $(shell find . $(TARGET:%=-not \$(LPAREN) -name % -prune \$(RPAREN)) -name '*.py')
-PRETTIER_SRC := $(shell find . $(TARGET:%=-not \$(LPAREN) -name % -prune \$(RPAREN)) -name '*.md')
+PRETTIER_SRC := $(shell find . $(TARGET:%=-not \$(LPAREN) -name % -prune \$(RPAREN)) -name '*.md' -o -name '*.yml')
 
 .PHONY: format
 format: target/format.target
@@ -72,7 +72,8 @@ install:
 package: target/package.target
 
 upload: target/package.target
-	python3 -m twine upload target/package/*
+	TWINE_PASSWORD="$$(aws --output text --query Parameter.Value --region=us-east-1 ssm get-parameter --name /SeerCI/PyPI/Token --with-decryption)" \
+		python3 -m twine upload --username=__token__ target/package/*
 
 target/package.target: setup.py README.md $(PY_SRC)
 	rm -fr $(@:.target=)

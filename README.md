@@ -19,16 +19,15 @@ and parallelism. In anecdotal usage, performance is 500k records/min serially.
 
 ### Supported
 
-* Parallelism
-* Foreign keys
-* PostgreSQL schema
+- Parallelism
+- Foreign keys
+- PostgreSQL schema
 
 ### Not supported
 
-* Creating PostgreSQL tables. If you need to convert schema, look at
-other tools like
-[mysql2postgres](https://github.com/maxlapshin/mysql2postgres).
-* Limiting the tables.
+- Creating PostgreSQL tables. If you need to convert schema, look at other tools
+  like [mysql2postgres](https://github.com/maxlapshin/mysql2postgres).
+- Limiting the tables.
 
 ## Implementation
 
