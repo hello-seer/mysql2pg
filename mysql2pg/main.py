@@ -3,7 +3,9 @@ import argparse
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Copy records from MySQL to PostgreSQL", prog="mysql2pg"
+        description="Copy records from MySQL to PostgreSQL",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        prog="mysql2pg",
     )
     parser.add_argument(
         "--parallelism",

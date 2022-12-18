@@ -79,9 +79,9 @@ Copy records from MySQL to PostgreSQL
 options:
   -h, --help            show this help message and exit
   --parallelism PARALLELISM
-                        Number of tables to process in parallel
+                        Number of tables to process in parallel (default: 10)
   --pg-search-path PG_SEARCH_PATH
-                        PostgreSQL search path
+                        PostgreSQL search path (default: None)
 ```
 
 ### Supported
