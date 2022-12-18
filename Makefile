@@ -71,7 +71,7 @@ install:
 .PHONY: package
 package: target/package.target
 
-upload: target/package-test.target
+upload: target/package.target
 	python3 -m twine upload target/package/*
 
 target/package.target: setup.py README.md $(PY_SRC)

@@ -6,8 +6,11 @@ class Throttle:
         self._semaphore = asyncio.Semaphore(max)
 
     async def throttle(self, coroutine):
-        async with self._semaphore:
-            return await coroutine
+        try:
+            async with self._semaphore:
+                return await coroutine
+        finally:
+            coroutine.close()
 
 
 async def run_parallel(coroutines):
@@ -16,10 +19,11 @@ async def run_parallel(coroutines):
         for task in tasks:
             await task
     except:
-        task.cancel()
-        try:
-            for task in tasks:
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
                 await task
-        except:
-            pass
+            except:
+                pass
         raise

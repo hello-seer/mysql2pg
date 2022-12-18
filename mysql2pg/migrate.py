@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import sys
 import time
@@ -18,31 +19,72 @@ async def _count_items(generator, output):
 
 
 async def _copy_table(mysql_pool: aiomysql.Pool, pg_pool: asyncpg.Pool, table: str):
-    start = time.process_time()
-    print(f"Copying table {table}", file=sys.stderr)
-    await asyncio.sleep(1)
-    async with mysql_pool.acquire() as mysql_conn, mysql_conn.cursor() as mysql_cur, pg_pool.acquire() as pg_conn:
-        await mysql_cur.execute(f"SHOW columns FROM `{table}`")
-        columns = []
-        async for row in mysql_cur:
-            columns.append(row[0])
-        await mysql_cur.execute(
-            f"SELECT {', '.join(f'`{column}`' for column in columns)} FROM `{table}`"
-        )
+    try:
+        start = time.process_time()
+        logging.info(f"Copying table {table}")
+        async with mysql_pool.acquire() as mysql_conn, mysql_conn.cursor() as mysql_cur, pg_pool.acquire() as pg_conn:
+            await mysql_cur.execute(f"SHOW columns FROM `{table}`")
+            columns = []
+            async for row in mysql_cur:
+                columns.append(row[0])
+            await mysql_cur.execute(
+                f"SELECT {', '.join(f'`{column}`' for column in columns)} FROM `{table}`"
+            )
 
-        await pg_conn.execute(f"TRUNCATE {table}")
-        rows = []
-        await pg_conn.copy_records_to_table(
-            table, records=_count_items(mysql_cur, rows), columns=columns
+            rows = []
+            await pg_conn.execute("SET session_replication_role = replica")
+            await pg_conn.copy_records_to_table(
+                table, records=_count_items(mysql_cur, rows), columns=columns
+            )
+        end = time.process_time()
+        logging.info(
+            f"Copied {rows[0]} rows to table {table} ({end - start:.2f}s)",
         )
-    end = time.process_time()
-    print(
-        f"Copied {rows[0]} rows to table {table} ({end - start:.2f}s)", file=sys.stderr
-    )
+    except Exception as e:
+        logging.error(f"Failed to copy table {table}: {e}")
+        raise
+
+    async with pg_pool.acquire() as conn:
+        sequences = await conn.fetch(
+            """
+SELECT *
+FROM
+    (
+        SELECT a.attname, pg_get_serial_sequence(c.relname, a.attname) AS sequence
+        FROM
+            pg_class AS c
+            JOIN pg_attribute AS a ON c.oid = a.attrelid
+        WHERE c.oid = $1::regclass AND c.relkind = 'r' AND a.atttypid <> 0 AND 0 < a.attnum
+    ) AS t
+WHERE sequence IS NOT NULL
+            """,
+            table,
+        )
+    for column, sequence in sequences:
+        try:
+            start = time.process_time()
+            logging.info(f"Resetting sequence {sequence}")
+            async with pg_pool.acquire() as conn:
+                await conn.execute(
+                    f"SELECT setval($1::regclass, 1 + coalesce(0, (SELECT max({column}) FROM {table})), false)",
+                    sequence,
+                )
+            end = time.process_time()
+            logging.info(
+                f"Reset sequence {sequence} ({end - start:.2f}s)",
+            )
+        except Exception as e:
+            logging.error(f"Failed to reset sequence {sequence}: {e}")
 
 
 async def _pg_init(conn):
-    await conn.execute("SET session_replication_role = replica")
+    await conn.set_type_codec(
+        "bool",
+        encoder=lambda x: b"\x01" if x else b"\x00",
+        decoder=lambda: None,
+        format="binary",
+        schema="pg_catalog",
+    )
 
 
 def _mysql_params():
@@ -70,19 +112,23 @@ def _mysql_params():
     return params
 
 
-async def migrate():
+async def migrate(parallelism):
     async with aiomysql.create_pool(
         **_mysql_params()
     ) as mysql_pool, asyncpg.create_pool(init=_pg_init) as pg_pool:
-        async with mysql_pool.acquire() as mysql_conn, mysql_conn.cursor() as mysql_cur:
-            await mysql_cur.execute("SHOW TABLES")
+        async with mysql_pool.acquire() as conn, conn.cursor() as cur:
+            await cur.execute("SHOW TABLES")
             tables = []
-            async for row in mysql_cur:
+            async for row in cur:
                 tables.append(row[0])
-            # tables = tuple(row[0] async for row in mysql_cur)
+        logging.info(f"Found {len(tables)} tables")
 
-        throttle = Throttle(10)
-        print(f"Copying {len(tables)} tables", file=sys.stderr)
+        # need to all tables at once because https://www.postgresql.org/message-id/15657-f94bb6e3ad28e1e2%40postgresql.org
+        logging.info(f"Truncating {len(tables)} tables")
+        async with pg_pool.acquire() as conn:
+            await conn.execute(f"TRUNCATE {', '.join(tables)}")
+
+        throttle = Throttle(parallelism)
         await run_parallel(
             throttle.throttle(_copy_table(mysql_pool, pg_pool, table))
             for table in tables
