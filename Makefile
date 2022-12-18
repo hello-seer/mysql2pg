@@ -37,7 +37,7 @@ format: target/format.target
 .PHONY: test-format
 test-format: target/format-test.target
 
-target/format.target: $(FORMAT_SRC) $(PRETTIER_SRC) target/node_modules.target
+target/format.target: .prettierrc.yml $(FORMAT_SRC) $(PRETTIER_SRC) target/node_modules.target
 	mkdir -p $(@D)
 	isort --profile black $(FORMAT_SRC)
 	black -t py37 $(FORMAT_SRC)
