@@ -2,8 +2,16 @@ import argparse
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="mysql2pg")
-    parser.add_argument("--parallelism", default=10, type=int)
+    parser = argparse.ArgumentParser(
+        description="Copy records from MySQL to PostgreSQL", prog="mysql2pg"
+    )
+    parser.add_argument(
+        "--parallelism",
+        default=10,
+        help="Number of tables to process in parallel",
+        type=int,
+    )
+    parser.add_argument("--pg-search-path", help="PostgreSQL search path")
     args = parser.parse_args()
 
     import asyncio
@@ -18,4 +26,6 @@ def main():
         level=logging.INFO,
     )
 
-    asyncio.run(migrate(parallelism=args.parallelism))
+    asyncio.run(
+        migrate(parallelism=args.parallelism, pg_search_path=args.pg_search_path)
+    )

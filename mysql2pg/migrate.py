@@ -1,21 +1,13 @@
-import asyncio
 import logging
 import os
-import sys
 import time
+import typing
 
 import aiomysql
 import asyncpg
 
 from .async_ import Throttle, run_parallel
-
-
-async def _count_items(generator, output):
-    count = 0
-    async for item in generator:
-        count += 1
-        yield item
-    output.append(count)
+from .iterator import async_count_elements
 
 
 async def _copy_table(mysql_pool: aiomysql.Pool, pg_pool: asyncpg.Pool, table: str):
@@ -32,9 +24,8 @@ async def _copy_table(mysql_pool: aiomysql.Pool, pg_pool: asyncpg.Pool, table: s
             )
 
             rows = []
-            await pg_conn.execute("SET session_replication_role = replica")
             await pg_conn.copy_records_to_table(
-                table, records=_count_items(mysql_cur, rows), columns=columns
+                table, records=async_count_elements(mysql_cur, rows), columns=columns
             )
         end = time.process_time()
         logging.info(
@@ -77,17 +68,7 @@ WHERE sequence IS NOT NULL
             logging.error(f"Failed to reset sequence {sequence}: {e}")
 
 
-async def _pg_init(conn):
-    await conn.set_type_codec(
-        "bool",
-        encoder=lambda x: b"\x01" if x else b"\x00",
-        decoder=lambda: None,
-        format="binary",
-        schema="pg_catalog",
-    )
-
-
-def _mysql_params():
+def _mysql_params() -> typing.Dict[str, typing.Any]:
     params = {}
     try:
         params["db"] = os.environ["MYSQL_DATABASE"]
@@ -112,21 +93,48 @@ def _mysql_params():
     return params
 
 
-async def migrate(parallelism):
+async def _mysql_tables(pool: aiomysql.Pool) -> typing.Tuple[str]:
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SHOW TABLES")
+        tables = []
+        async for row in cur:
+            tables.append(row[0])
+    logging.info(f"Found {len(tables)} tables")
+    return tables
+
+
+async def _pg_init(conn):
+    await conn.set_type_codec(
+        "bool",
+        encoder=lambda x: b"\x01" if x else b"\x00",
+        decoder=lambda: None,
+        format="binary",
+        schema="pg_catalog",
+    )
+
+
+async def _pg_truncate(pool: asyncpg.Pool, tables: typing.Tuple[str]):
+    # need to all tables at once because https://www.postgresql.org/message-id/15657-f94bb6e3ad28e1e2%40postgresql.org
+    logging.info(f"Truncating {len(tables)} tables")
+    async with pool.acquire() as conn:
+        await conn.execute(f"TRUNCATE {', '.join(tables)}")
+
+
+async def migrate(parallelism: int, pg_search_path: str | None):
+    pg_server_settings = {
+        "application_name": "mysql2pg",
+        "session_replication_role": "replica",
+    }
+    if pg_search_path:
+        pg_server_settings["search_path"] = pg_search_path
     async with aiomysql.create_pool(
         **_mysql_params()
-    ) as mysql_pool, asyncpg.create_pool(init=_pg_init) as pg_pool:
-        async with mysql_pool.acquire() as conn, conn.cursor() as cur:
-            await cur.execute("SHOW TABLES")
-            tables = []
-            async for row in cur:
-                tables.append(row[0])
-        logging.info(f"Found {len(tables)} tables")
+    ) as mysql_pool, asyncpg.create_pool(
+        init=_pg_init, server_settings=pg_server_settings
+    ) as pg_pool:
+        tables = await _mysql_tables(mysql_pool)
 
-        # need to all tables at once because https://www.postgresql.org/message-id/15657-f94bb6e3ad28e1e2%40postgresql.org
-        logging.info(f"Truncating {len(tables)} tables")
-        async with pg_pool.acquire() as conn:
-            await conn.execute(f"TRUNCATE {', '.join(tables)}")
+        await _pg_truncate(pg_pool, tables)
 
         throttle = Throttle(parallelism)
         await run_parallel(
