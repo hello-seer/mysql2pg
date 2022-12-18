@@ -1,5 +1,8 @@
 # MySQL to PostgreSQL
 
+[![PyPI](https://img.shields.io/pypi/v/mysql2pg)](https://pypi.org/project/mysql2pg/)
+[![Publish](https://github.com/hello-seer/mysql2pg/actions/workflows/publish.yml/badge.svg)](https://github.com/hello-seer/mysql2pg/actions/workflows/publish.yml)
+
 Copy rows from MySQL to PostgreSQL quickly.
 
 ## Install
