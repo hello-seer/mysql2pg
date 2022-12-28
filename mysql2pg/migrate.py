@@ -1,16 +1,28 @@
+import concurrent.futures
 import logging
 import os
 import time
 import typing
 
-import aiomysql
 import asyncpg
 
 from .async_ import Throttle, run_parallel
 from .iterator import async_count_elements
+from .mysql import create_pool, Pool, Cursor
 
 
-async def _copy_table(mysql_pool: aiomysql.Pool, pg_pool: asyncpg.Pool, table: str):
+def _converter(namespace: str, name: str):
+    if (namespace, name) == ("pg_catalog", "bool"):
+        return bool
+    return lambda x: x
+
+
+async def _convert(cur: Cursor, converters: typing.Sequence[typing.Callable]):
+    async for row in cur:
+        yield tuple(converter(value) for value, converter in zip(row, converters))
+
+
+async def _copy_table(mysql_pool: Pool, pg_pool: asyncpg.Pool, table: str):
     try:
         start = time.process_time()
         logging.info(f"Copying table {table}")
@@ -23,13 +35,43 @@ async def _copy_table(mysql_pool: aiomysql.Pool, pg_pool: asyncpg.Pool, table: s
                 f"SELECT {', '.join(f'`{column}`' for column in columns)} FROM `{table}`"
             )
 
-            rows = []
+            types = await pg_conn.fetch(
+                """
+SELECT pn.nspname, pt.typname
+FROM
+    unnest($2::text[]) WITH ORDINALITY AS d (name, ordinal)
+    JOIN pg_attribute AS pa ON d.name = pa.attname
+    JOIN pg_type AS pt ON pa.atttypid = pt.oid
+    JOIN pg_namespace AS pn ON pt.typnamespace = pn.oid
+WHERE pa.attrelid = $1::regclass
+ORDER BY d.ordinal
+                """,
+                table,
+                columns,
+            )
+            if len(columns) != len(types):
+                raise RuntimeError("Missing columns from PostgreSQL")
+            data = _convert(mysql_cur, tuple(_converter(*t) for t in types))
+
+            count = 0
+
+            async def log_records():
+                nonlocal count
+                async for item in data:
+                    count += 1
+                    if not count % (1000 * 50):
+                        end = time.process_time()
+                        logging.debug(
+                            f"Copied {count} rows to table {table}... ({end - start:.2f}s)"
+                        )
+                    yield item
+
             await pg_conn.copy_records_to_table(
-                table, records=async_count_elements(mysql_cur, rows), columns=columns
+                table, records=log_records(), columns=columns
             )
         end = time.process_time()
         logging.info(
-            f"Copied {rows[0]} rows to table {table} ({end - start:.2f}s)",
+            f"Copied {count} rows to table {table} ({end - start:.2f}s)",
         )
     except Exception as e:
         logging.error(f"Failed to copy table {table}: {e}")
@@ -93,7 +135,7 @@ def _mysql_params() -> typing.Dict[str, typing.Any]:
     return params
 
 
-async def _mysql_tables(pool: aiomysql.Pool) -> typing.Tuple[str]:
+async def _mysql_tables(pool: Pool) -> typing.Tuple[str]:
     async with pool.acquire() as conn, conn.cursor() as cur:
         await cur.execute("SHOW TABLES")
         tables = []
@@ -103,16 +145,6 @@ async def _mysql_tables(pool: aiomysql.Pool) -> typing.Tuple[str]:
     return tables
 
 
-async def _pg_init(conn):
-    await conn.set_type_codec(
-        "bool",
-        encoder=lambda x: b"\x01" if x else b"\x00",
-        decoder=lambda: None,
-        format="binary",
-        schema="pg_catalog",
-    )
-
-
 async def _pg_truncate(pool: asyncpg.Pool, tables: typing.Tuple[str]):
     # need to all tables at once because https://www.postgresql.org/message-id/15657-f94bb6e3ad28e1e2%40postgresql.org
     logging.info(f"Truncating {len(tables)} tables")
@@ -120,19 +152,20 @@ async def _pg_truncate(pool: asyncpg.Pool, tables: typing.Tuple[str]):
         await conn.execute(f"TRUNCATE {', '.join(tables)}")
 
 
-async def migrate(parallelism: int, pg_search_path: str | None):
+async def migrate(
+    parallelism: int, pg_search_path: str | None, tables: typing.Sequence[str] | None
+):
     pg_server_settings = {
         "application_name": "mysql2pg",
         "session_replication_role": "replica",
     }
     if pg_search_path:
         pg_server_settings["search_path"] = pg_search_path
-    async with aiomysql.create_pool(
-        **_mysql_params()
-    ) as mysql_pool, asyncpg.create_pool(
-        init=_pg_init, server_settings=pg_server_settings
-    ) as pg_pool:
-        tables = await _mysql_tables(mysql_pool)
+    async with create_pool(
+        parallelism, **_mysql_params()
+    ) as mysql_pool, asyncpg.create_pool(server_settings=pg_server_settings) as pg_pool:
+        if tables is None:
+            tables = await _mysql_tables(mysql_pool)
 
         await _pg_truncate(pg_pool, tables)
 

@@ -72,12 +72,18 @@ and parallelism. In anecdotal usage, performance is 500k records/min serially.
 ### Usage
 
 ```txt
-usage: mysql2pg [-h] [--parallelism PARALLELISM] [--pg-search-path PG_SEARCH_PATH]
+usage: mysql2pg [-h] [--log-level {critical,error,warning,info,debug}] [--parallelism PARALLELISM]
+                [--pg-search-path PG_SEARCH_PATH]
+                [tables ...]
 
 Copy records from MySQL to PostgreSQL
 
+positional arguments:
+  tables
+
 options:
   -h, --help            show this help message and exit
+  --log-level {critical,error,warning,info,debug}
   --parallelism PARALLELISM
                         Number of tables to process in parallel (default: 10)
   --pg-search-path PG_SEARCH_PATH
@@ -94,7 +100,6 @@ options:
 
 - Creating PostgreSQL tables. If you need to convert schema, look at other tools
   like [mysql2postgres](https://github.com/maxlapshin/mysql2postgres).
-- Limiting the tables.
 
 ## Implementation
 
