@@ -18,7 +18,7 @@ def _converter(namespace: str, name: str) -> typing.Callable:
 
 
 async def _convert(cur: aiomysql.Cursor, converters: typing.Iterable[typing.Callable]):
-    for row in cur:
+    async for row in cur:
         yield tuple(converter(value) for value, converter in zip(row, converters))
 
 

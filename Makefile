@@ -84,7 +84,7 @@ target/package.target: setup.py README.md $(PY_SRC)
 
 ###
 # Python types
-##
+###
 
 .PHONY: test-types
 test-types: target/types-test.target
@@ -92,3 +92,11 @@ test-types: target/types-test.target
 target/types-test.target: setup.cfg $(PY_SRC)
 	pytype
 	> $@
+
+###
+# Test
+###
+
+.PHONY: test
+test:
+	pytest -s test

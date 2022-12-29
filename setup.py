@@ -21,7 +21,9 @@ setuptools.setup(
             "mysql2pg=mysql2pg.main:main",
         ]
     },
-    extras_require={"dev": ["black", "isort", "pytype", "twine"]},
+    extras_require={
+        "dev": ["black", "isort", "pytest", "pytest-asyncio", "pytype", "twine"]
+    },
     long_description=pathlib.Path("README.md").read_text(),
     long_description_content_type="text/markdown",
     install_requires=["aiomysql", "asyncpg"],
