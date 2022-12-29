@@ -67,7 +67,7 @@ Mysql2pg copies records from MySQL tables to existing PostgreSQL tables.
 Mysql2pg also resets sequences, based on the maximum column value.
 
 Performance is limited by network bandwidth, database resources, record size,
-and parallelism. In anecdotal usage, performance is 500k records/min serially.
+and parallelism. In anecdotal usage, performance is 250k records/min serially.
 
 ### Usage
 

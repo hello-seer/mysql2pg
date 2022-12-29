@@ -1,30 +1,30 @@
-import concurrent.futures
 import logging
-import os
-import time
 import typing
 
+import aiomysql
 import asyncpg
+from aiomysql import cursors
 
 from .async_ import Throttle, run_parallel
-from .iterator import async_count_elements
-from .mysql import create_pool, Pool, Cursor
+from .function_ import identity
+from .mysql import mysql_params
+from .time_ import Timer
 
 
-def _converter(namespace: str, name: str):
+def _converter(namespace: str, name: str) -> typing.Callable:
     if (namespace, name) == ("pg_catalog", "bool"):
         return bool
-    return lambda x: x
+    return identity
 
 
-async def _convert(cur: Cursor, converters: typing.Sequence[typing.Callable]):
-    async for row in cur:
+async def _convert(cur: aiomysql.Cursor, converters: typing.Iterable[typing.Callable]):
+    for row in cur:
         yield tuple(converter(value) for value, converter in zip(row, converters))
 
 
-async def _copy_table(mysql_pool: Pool, pg_pool: asyncpg.Pool, table: str):
+async def _copy_table(mysql_pool: aiomysql.Pool, pg_pool: asyncpg.Pool, table: str):
     try:
-        start = time.process_time()
+        timer = Timer()
         logging.info(f"Copying table {table}")
         async with mysql_pool.acquire() as mysql_conn, mysql_conn.cursor() as mysql_cur, pg_pool.acquire() as pg_conn:
             await mysql_cur.execute(f"SHOW columns FROM `{table}`")
@@ -60,18 +60,16 @@ ORDER BY d.ordinal
                 async for item in data:
                     count += 1
                     if not count % (1000 * 50):
-                        end = time.process_time()
                         logging.debug(
-                            f"Copied {count} rows to table {table}... ({end - start:.2f}s)"
+                            f"Copied {count} rows to table {table}... ({timer.elapsed():.2f}s)"
                         )
                     yield item
 
             await pg_conn.copy_records_to_table(
                 table, records=log_records(), columns=columns
             )
-        end = time.process_time()
         logging.info(
-            f"Copied {count} rows to table {table} ({end - start:.2f}s)",
+            f"Copied {count} rows to table {table} ({timer.elapsed():.2f}s)",
         )
     except Exception as e:
         logging.error(f"Failed to copy table {table}: {e}")
@@ -95,47 +93,21 @@ WHERE sequence IS NOT NULL
         )
     for column, sequence in sequences:
         try:
-            start = time.process_time()
+            timer = Timer()
             logging.info(f"Resetting sequence {sequence}")
             async with pg_pool.acquire() as conn:
                 await conn.execute(
                     f"SELECT setval($1::regclass, 1 + coalesce(0, (SELECT max({column}) FROM {table})), false)",
                     sequence,
                 )
-            end = time.process_time()
             logging.info(
-                f"Reset sequence {sequence} ({end - start:.2f}s)",
+                f"Reset sequence {sequence} ({timer.elapsed():.2f}s)",
             )
         except Exception as e:
             logging.error(f"Failed to reset sequence {sequence}: {e}")
 
 
-def _mysql_params() -> typing.Dict[str, typing.Any]:
-    params = {}
-    try:
-        params["db"] = os.environ["MYSQL_DATABASE"]
-    except KeyError:
-        pass
-    try:
-        params["host"] = os.environ["MYSQL_HOST"]
-    except KeyError:
-        pass
-    try:
-        params["password"] = os.environ["MYSQL_PASSWORD"]
-    except KeyError:
-        pass
-    try:
-        params["port"] = int(os.environ["MYSQL_PORT"])
-    except KeyError:
-        pass
-    try:
-        params["user"] = os.environ["MYSQL_USER"]
-    except KeyError:
-        pass
-    return params
-
-
-async def _mysql_tables(pool: Pool) -> typing.Tuple[str]:
+async def _mysql_tables(pool: aiomysql.Pool) -> typing.Iterable[str]:
     async with pool.acquire() as conn, conn.cursor() as cur:
         await cur.execute("SHOW TABLES")
         tables = []
@@ -145,15 +117,15 @@ async def _mysql_tables(pool: Pool) -> typing.Tuple[str]:
     return tables
 
 
-async def _pg_truncate(pool: asyncpg.Pool, tables: typing.Tuple[str]):
+async def _pg_truncate(pool: asyncpg.Pool, tables: typing.Iterable[str]):
     # need to all tables at once because https://www.postgresql.org/message-id/15657-f94bb6e3ad28e1e2%40postgresql.org
-    logging.info(f"Truncating {len(tables)} tables")
+    logging.info(f"Truncating {len(tuple(tables))} tables")
     async with pool.acquire() as conn:
         await conn.execute(f"TRUNCATE {', '.join(tables)}")
 
 
 async def migrate(
-    parallelism: int, pg_search_path: str | None, tables: typing.Sequence[str] | None
+    parallelism: int, pg_search_path: str | None, tables: typing.Iterable[str] | None
 ):
     pg_server_settings = {
         "application_name": "mysql2pg",
@@ -161,9 +133,11 @@ async def migrate(
     }
     if pg_search_path:
         pg_server_settings["search_path"] = pg_search_path
-    async with create_pool(
-        parallelism, **_mysql_params()
-    ) as mysql_pool, asyncpg.create_pool(server_settings=pg_server_settings) as pg_pool:
+    async with aiomysql.create_pool(
+        cursorclass=cursors.SSCursor, minsize=0, maxsize=parallelism, **mysql_params()
+    ) as mysql_pool, asyncpg.create_pool(
+        min_size=0, max_size=parallelism, server_settings=pg_server_settings
+    ) as pg_pool:
         if tables is None:
             tables = await _mysql_tables(mysql_pool)
 

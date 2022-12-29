@@ -18,7 +18,7 @@ RPAREN := )
 # Clean
 ###
 
-TARGET := build mysql2pg.egg-info target
+TARGET := .pytype build mysql2pg.egg-info target
 
 .PHONY: clean
 clean:
@@ -46,6 +46,7 @@ target/format.target: .prettierrc.yml $(FORMAT_SRC) $(PRETTIER_SRC) target/node_
 
 target/format-test.target: $(FORMAT_SRC)
 	mkdir -p $(@D)
+	isort -c --profile black $(FORMAT_SRC)
 	black -t py37 --check $(FORMAT_SRC)
 	touch $@ target/format.target
 
@@ -79,4 +80,15 @@ target/package.target: setup.py README.md $(PY_SRC)
 	rm -fr $(@:.target=)
 	mkdir -p $(@:.target=)
 	./$< bdist_wheel -d $(@:.target=) sdist -d $(@:.target=)
+	> $@
+
+###
+# Python types
+##
+
+.PHONY: test-types
+test-types: target/types-test.target
+
+target/types-test.target: setup.cfg $(PY_SRC)
+	pytype
 	> $@
