@@ -97,7 +97,7 @@ WHERE sequence IS NOT NULL
             logging.info(f"Resetting sequence {sequence}")
             async with pg_pool.acquire() as conn:
                 await conn.execute(
-                    f"SELECT setval($1::regclass, 1 + coalesce(0, (SELECT max({column}) FROM {table})), false)",
+                    f"SELECT setval($1::regclass, 1 + coalesce((SELECT max({column}) FROM {table}), 0), false)",
                     sequence,
                 )
             logging.info(
