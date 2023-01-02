@@ -1,29 +1,25 @@
 import asyncio
+import contextlib
+import sys
+import typing
 
+T = typing.TypeVar("T")
 
-class Throttle:
-    def __init__(self, max: int):
-        self._semaphore = asyncio.Semaphore(max)
-
-    async def throttle(self, coroutine):
-        try:
-            async with self._semaphore:
-                return await coroutine
-        finally:
-            coroutine.close()
-
-
-async def run_parallel(coroutines):
-    tasks = tuple(asyncio.create_task(coroutine) for coroutine in coroutines)
+async def run_all(tasks: typing.Iterable):
+    tasks = tuple(tasks)
     try:
-        for task in tasks:
-            await task
-    except:
+        return await asyncio.gather(*tasks)
+    finally:
         for task in tasks:
             task.cancel()
-        for task in tasks:
-            try:
-                await task
-            except:
-                pass
-        raise
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@contextlib.contextmanager
+def sync_contextmanager(
+    context: typing.AsyncContextManager[T], loop
+) -> typing.ContextManager[T]:
+    try:
+        yield loop.run_until_complete(context.__aenter__())
+    finally:
+        loop.run_until_complete(context.__aexit__(*sys.exc_info()))

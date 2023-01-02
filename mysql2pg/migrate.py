@@ -1,12 +1,16 @@
+import asyncio
 import logging
 import typing
+from concurrent import futures
 
 import aiomysql
 import asyncpg
 from aiomysql import cursors
 
-from .async_ import Throttle, run_parallel
+from .async_ import run_all, sync_contextmanager
+from .context import lazy_asynccontext
 from .function_ import identity
+from .multiprocess import Context
 from .mysql import mysql_params
 from .time_ import Timer
 
@@ -124,9 +128,21 @@ async def _pg_truncate(pool: asyncpg.Pool, tables: typing.Iterable[str]):
         await conn.execute(f"TRUNCATE {', '.join(tables)}")
 
 
+_mysql_pool: Context[aiomysql.Pool] = Context()
+_pg_pool: Context[asyncpg.Pool] = Context()
+
+_loop = asyncio.new_event_loop()
+
+
+def _copy(table: str):
+    _loop.run_until_complete(_copy_table(_mysql_pool.value, _pg_pool.value, table))
+
+
 async def migrate(
     parallelism: int, pg_search_path: str | None, tables: typing.Iterable[str] | None
 ):
+    loop = asyncio.get_running_loop()
+
     pg_server_settings = {
         "application_name": "mysql2pg",
         "session_replication_role": "replica",
@@ -134,17 +150,44 @@ async def migrate(
     if pg_search_path:
         pg_server_settings["search_path"] = pg_search_path
     async with aiomysql.create_pool(
-        cursorclass=cursors.SSCursor, minsize=0, maxsize=parallelism, **mysql_params()
+        minsize=0, maxsize=1, **mysql_params()
     ) as mysql_pool, asyncpg.create_pool(
-        min_size=0, max_size=parallelism, server_settings=pg_server_settings
+        min_size=0, max_size=1, server_settings=pg_server_settings
     ) as pg_pool:
         if tables is None:
             tables = await _mysql_tables(mysql_pool)
 
         await _pg_truncate(pg_pool, tables)
 
-        throttle = Throttle(parallelism)
-        await run_parallel(
-            throttle.throttle(_copy_table(mysql_pool, pg_pool, table))
-            for table in tables
+        mysql_initializer = _mysql_pool.initializer(
+            sync_contextmanager(
+                lazy_asynccontext(
+                    lambda: aiomysql.create_pool(
+                        cursorclass=cursors.SSCursor,
+                        minsize=0,
+                        maxsize=1,
+                        **mysql_params(),
+                    )
+                ),
+                _loop,
+            )
         )
+        pg_initializer = _pg_pool.initializer(
+            sync_contextmanager(
+                lazy_asynccontext(
+                    lambda: asyncpg.create_pool(
+                        min_size=0, max_size=1, server_settings=pg_server_settings
+                    )
+                ),
+                _loop,
+            )
+        )
+
+        def initializer():
+            mysql_initializer()
+            pg_initializer()
+
+        with futures.ProcessPoolExecutor(
+            max_workers=parallelism, initializer=initializer
+        ) as pool:
+            await run_all(loop.run_in_executor(pool, _copy, table) for table in tables)
