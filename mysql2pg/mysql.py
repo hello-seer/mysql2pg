@@ -2,7 +2,7 @@ import os
 import typing
 
 
-def mysql_params() -> dict[str, typing.Any]:
+def conn_params() -> dict[str, typing.Any]:
     params: dict[str, typing.Any] = {}
     try:
         params["db"] = os.environ["MYSQL_DATABASE"]
