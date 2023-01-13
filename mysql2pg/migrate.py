@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 def _converter(namespace: str, name: str) -> typing.Callable[[typing.Any], typing.Any]:
     if (namespace, name) == ("pg_catalog", "bool"):
-        return bool
+        return lambda value: bool(value) if value is not None else None
     return function.identity
 
 
@@ -37,6 +37,7 @@ async def _copy_table(mysql_pool: aiomysql.Pool, pg_pool: asyncpg.Pool, table: s
         ) as pg_conn:
             await mysql_cur.execute(f"SHOW columns FROM `{table}`")
             columns = [row[0] async for row in mysql_cur]
+            print("columns", columns)
             await mysql_cur.execute(
                 f"SELECT {', '.join(f'`{column}`' for column in columns)} FROM `{table}`"
             )
@@ -157,7 +158,7 @@ async def migrate(
         if tables is None:
             tables = await _mysql_tables(mysql_pool)
 
-        await _pg_truncate(pg_pool, tables)
+        # await _pg_truncate(pg_pool, tables)
 
         mysql_initializer = _mysql_pool.initializer(
             context.sync_contextmanager(
